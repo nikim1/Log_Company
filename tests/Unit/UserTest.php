@@ -38,7 +38,12 @@ class UserTest extends TestCase
     public function test_user_can_be_deleted()
     {
         $this->user->delete();
-        $this->assertDatabaseMissing('users', [
+        $this->assertSoftDeleted('users', [
+            'id' => $this->user->id,
+        ]);
+
+        $this->user->restore();
+        $this->assertDatabaseHas('users', [
             'id' => $this->user->id,
         ]);
     }

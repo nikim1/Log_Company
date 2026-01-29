@@ -105,7 +105,7 @@ class ProfileController extends Controller
             [
                 'address' => $validated['address'],
                 'city' => $validated['city'],
-                'client_id' => $user->id,
+                'client_id' => $user->client->id,
             ]
         );
 
