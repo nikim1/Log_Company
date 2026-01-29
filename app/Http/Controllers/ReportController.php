@@ -72,7 +72,7 @@ class ReportController extends Controller
         // h. Всички приходи на фирмата за определен период
         $revenue = 0;
         if ($request->start_date && $request->end_date) {
-            $revenue = Shipment::whereHas('registeredBy', function ($q) use ($company_id) {
+            $revenue = Shipment::where('status', 'delivered')->whereHas('registeredBy', function ($q) use ($company_id) {
                 $q->where('company_id', $company_id);
             })
                 ->whereBetween('created_at', [$request->start_date, $request->end_date])
