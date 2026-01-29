@@ -2,92 +2,93 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Shipment;
-use App\Models\Employee;
-use App\Models\Office;
 use App\Models\Client;
+use App\Models\Employee;
+use App\Models\Shipment;
 use Illuminate\Http\Request;
 
 class ReportController extends Controller
 {
-     public function getEmployeesByCompany($companyId)
+    public $statuses = [
+        'in_transit' => 'На път',
+        'pending' => 'Очакваща обработка',
+        'delivered' => 'Доставена',
+        'at_office' => 'В офис',
+    ];
+
+    public function index(Request $request)
     {
-        $employees = Employee::whereHas('office', function ($query) use ($companyId) {
-            $query->where('company_id', $companyId);
-        })->get();
+        $user = auth()->user();
 
-        return $employees;
-    }
-    
-    public function allClientsByCompany($companyId)
-    {
-        return Client::where('company_id', $companyId)->get();
-    }
+        if (!$user->hasRole(['office', 'courier'])) {
+            return redirect()->route('dashboard')->with('error', 'Нямате достъп до справки.');
+        }
 
-public function registeredShipmentsByCompany($companyId)
-{
-    $officeIds = Office::where('company_id', $companyId)
-        ->pluck('id');
+        $company_id = $user->employee->company_id;
 
-    return Shipment::where('status', 'registered')
-        ->whereIn('origin_office_id', $officeIds)
-        ->get();
-}
+        // a. Всички служители в компанията
+        $employees = Employee::where('company_id', $company_id)->with('user')->get();
 
-public function shipmentsRegisteredByEmployeeInCompany($employeeId, $companyId)
-{
-    $officeIds = Office::where('company_id', $companyId)->pluck('id');
+        // b. Всички клиенти на компанията
+        $clients = Client::where('company_id', $company_id)->with('user')->get();
 
-    return Shipment::where('status', 'registered')
-        ->where('registered_by', $employeeId)
-        ->whereIn('origin_office_id', $officeIds)
-        ->get();
-}
+        // c. Всички пратки, които са били регистрирани
+        $allShipments = Shipment::whereHas('registeredBy', function ($q) use ($company_id) {
+            $q->where('company_id', $company_id);
+        })->with(['sender', 'receiver', 'sendShipment', 'receiveShipment'])->get();
 
-public function shipmentsInTransitByCompany($companyId)
-{
-    $officeIds = Office::where('company_id', $companyId)
-        ->pluck('id');
+        // d. Всички пратки, регистрирани от даден служител
+        $shipmentsByEmployee = [];
+        if ($request->employee_id) {
+            $shipmentsByEmployee = Shipment::where('registered_by', $request->employee_id)
+                ->with(['sender', 'receiver', 'sendShipment', 'receiveShipment'])
+                ->get();
+        }
 
-    return Shipment::where('status', 'in transit')
-        ->whereIn('origin_office_id', $officeIds)
-        ->get();
-}
-
-public function shipmentsBySenderInCompany($clientId, $companyId)
-{
-    $officeIds = Office::where('company_id', $companyId)->pluck('id');
-
-    return Shipment::where('sender_id', $clientId)
-        ->whereIn('origin_office_id', $officeIds)
-        ->get();
-}
-
-public function deliveredShipmentsByReceiverInCompany($clientId, $companyId)
-{
-    $officeIds = Office::where('company_id', $companyId)->pluck('id');
-
-    return Shipment::where('status', 'delivered')
-        ->where('receiver_id', $clientId)
-        ->whereIn('origin_office_id', $officeIds)
-        ->get();
-}
-    
-    public function getRevenueForPeriod(Request $request)
-    {
-        $startDate = $request->input('start_date', date('Y-m-d'));
-        $endDate = $request->input('end_date', date('Y-m-d'));
-        
-        $revenueData = Shipment::where('created_at', '>=', $startDate)
-            ->where('created_at','<=', $endDate)
-            ->where('status', 'delivered')
-            ->selectRaw('DATE(created_at) as date, SUM(price) as total_revenue')
-            ->groupBy('date')
-            ->orderBy('date')
+        // e. Всички пратки, изпратени, но не доставени
+        $pendingDeliveries = Shipment::where('status', '!=', 'delivered')
+            ->whereHas('registeredBy', function ($q) use ($company_id) {
+                $q->where('company_id', $company_id);
+            })
+            ->with(['sender', 'receiver', 'sendShipment', 'receiveShipment'])
             ->get();
-        
-        $total = $revenueData->sum('total_revenue');
-        
-        return $total;
+
+        // f. Всички пратки, изпратени от даден клиент
+        $shipmentsBySender = [];
+        if ($request->client_id) {
+            $shipmentsBySender = Shipment::where('sender_id', $request->client_id)
+                ->with(['sender', 'receiver', 'sendShipment', 'receiveShipment'])
+                ->get();
+        }
+
+        // g. Всички пратки, получени от даден клиент
+        $shipmentsByReceiver = [];
+        if ($request->client_id) {
+            $shipmentsByReceiver = Shipment::where('receiver_id', $request->client_id)
+                ->with(['sender', 'receiver', 'sendShipment', 'receiveShipment'])
+                ->get();
+        }
+
+        // h. Всички приходи на фирмата за определен период
+        $revenue = 0;
+        if ($request->start_date && $request->end_date) {
+            $revenue = Shipment::whereHas('registeredBy', function ($q) use ($company_id) {
+                $q->where('company_id', $company_id);
+            })
+                ->whereBetween('created_at', [$request->start_date, $request->end_date])
+                ->sum('price');
+        }
+
+        return view('reports', compact(
+            'employees',
+            'clients',
+            'allShipments',
+            'shipmentsByEmployee',
+            'pendingDeliveries',
+            'shipmentsBySender',
+            'shipmentsByReceiver',
+            'revenue'
+        ) + ['statuses' => $this->statuses])
+            ->with('request', $request);
     }
 }

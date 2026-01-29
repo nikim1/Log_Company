@@ -2,49 +2,46 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
-
 class Shipment extends Model
 {
-    use SoftDeletes;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
-        'delivery_address',
+        'sender_id',
+        'receiver_id',
         'weight',
         'price',
         'status',
+        'delivered_at',
+        'registered_by',
     ];
 
     public function sender()
     {
-        return $this->belongsTo(Client::class, 'sender_id');
+        return $this->belongsTo(Client::class, 'sender_id', 'id');
     }
 
     public function receiver()
     {
-        return $this->belongsTo(Client::class, 'receiver_id');
+        return $this->belongsTo(Client::class, 'receiver_id', 'id');
     }
 
-    public function origin_ofice()
+    public function sendShipment()
     {
-        return $this->belongsTo(Office::class, 'origin_office_id');
+        return $this->hasOne(ShipmentSender::class, 'shipment_id', 'id');
     }
 
-    public function receiver_ofice()
+    public function receiveShipment()
     {
-        return $this->belongsTo(Office::class, 'destination_office_id');
+        return $this->hasOne(ShipmentReceiver::class, 'shipment_id', 'id');
     }
 
-    public function courier()
+    public function registeredBy()
     {
-        return $this->belongsTo(Employee::class, 'courier_id');
+        return $this->belongsTo(Employee::class, 'registered_by', 'id');
     }
-
-    public function registered_by()
-    {
-        return $this->belongsTo(Employee::class, 'registered_by');
-    }
-
 }

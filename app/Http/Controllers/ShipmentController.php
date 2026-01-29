@@ -3,12 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Models\Shipment;
-use App\Models\Company;
-use App\Models\Office;
-use App\Models\Client;
-use App\Models\Employee;
-
+use App\Models\ShipmentReceiver;
+use App\Models\ShipmentSender;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class ShipmentController extends Controller
 {
@@ -17,164 +15,141 @@ class ShipmentController extends Controller
     const ADDRESS_DELIVERY_FEE = 3.50;
     const MINIMUM_PRICE = 5.00;
 
-    public function updateCompany(Request $request)
+    public function deleteShipment($shipment_id)
     {
-        $request->validate([
-            'name'    => 'required|string|max:50',
-            'address' => 'required|string|max:50',
-            'phone'   => 'required|string|max:12',
-            'email'   => 'required|email|max:50',
-            'website' => 'nullable|string|max:50',
+        $shipment = Shipment::find($shipment_id);
+        if ($shipment) {
+            $shipment->delete();
+            return back()->with('success', 'Пратката е изтрита успешно!');
+        } else {
+            return back()->with('error', 'Не съществува такава пратка!');
+        }
+    }
+
+    public function saveShipment(Request $request, $shipment_id = null)
+    {
+        $validated =  $request->validate([
+            'receiver_id' => 'required|exists:users,id',
+
+            'send_type' => 'required|in:office,address',
+            'send_office_id' => ['nullable', 'required_if:send_type,office', 'exists:offices,id', Rule::notIn([$request->delivery_office_id])],
+            'send_address' => ['nullable', 'required_if:send_type,address', 'exists:client_addresses,id', Rule::notIn([$request->delivery_address])],
+            'delivery_type' => 'required|in:office,address',
+            'delivery_office_id' => ['nullable', 'required_if:delivery_type,office', 'exists:offices,id', Rule::notIn([$request->send_office_id])],
+            'delivery_address' => ['nullable', 'required_if:delivery_type,address', 'exists:client_addresses,id', Rule::notIn([$request->send_address])],
+
+            'weight' => 'required|numeric|min:0.1',
         ]);
 
-        return Company::updateOrCreate(
-            ['id' => $request->companyId],
+        $price = $this->calculatePrice($validated['weight'], $validated['delivery_type']);
+
+        $shipment = Shipment::updateOrCreate(
+            ['id' => $shipment_id],
             [
-                'name'    => $request->name,
-                'address' => $request->address,
-                'phone'   => $request->phone,
-                'email'   => $request->email,
-                'website' => $request->website
+                'sender_id' => auth()->user()->client->id,
+                'receiver_id' => $validated['receiver_id'],
+                'weight' => $validated['weight'],
+                'price' => $price,
+                'status' => $validated['send_address'] ? 'pending' : 'at_office',
             ]
         );
-    }
 
-    public function deleteCompany(Request $request)
-    {
-        Company::findOrFail($request->companyId)->delete();
-    }
-
-    public function updateOffice(Request $request)
-    {
-        $request->validate([
-            'company_id' => 'required|exists:companies,id',
-            'name'       => 'required|string|max:50',
-            'city'       => 'required|string|max:50',
-            'address'    => 'required|string|max:50',
-            'phone'      => 'required|string|max:12',
-        ]);
-
-        return Office::updateOrCreate(
-            ['id' => $request->officeId],
+        ShipmentSender::updateOrCreate(
+            ['shipment_id' => $shipment->id],
             [
-                'company_id' => $request->company_id,
-                'name'       => $request->name,
-                'city'       => $request->city,
-                'address'    => $request->address,
-                'phone'      => $request->phone,
+                'sender_type' => $validated['send_type'],
+                'office_id' => $validated['send_office_id'],
+                'address_id' => $validated['send_address'],
             ]
         );
-    }
 
-    public function deleteOffice(Request $request)
-    {
-        Office::findOrFail($request->officeId)->delete();
-    }
-
-    public function updateClient(Request $request)
-    {
-        $request->validate([
-            'user_id'      => 'required|exists:user,id',
-            'company_id'   => 'required|exists:companies,id',
-            'phone'        => 'required|string|max:50',
-            'address'      => 'required|string|max:100',
-        ]);
-
-        return Client::updateOrCreate(
-            ['id' => $request->clientId],
+        ShipmentReceiver::updateOrCreate(
+            ['shipment_id' => $shipment->id],
             [
-                'user_id'      => $request->user_id,
-                'company_id'   => $request->company_id,
-                'phone'        => $request->phone,
-                'address'      => $request->address,
+                'delivery_type' => $validated['delivery_type'],
+                'office_id' => $validated['delivery_office_id'],
+                'address_id' => $validated['delivery_address'],
             ]
         );
+
+        $message = $shipment_id ? 'Пратката е променена успешно.' : 'Пратката е записана успешно.';
+        return redirect()->back()->with('success', $message);
     }
 
-    public function deleteClient(Request $request)
+    public function deliverShipment($shipment_id)
     {
-        Client::findOrFail($request->clientId)->delete();
-    }
+        $shipment = Shipment::find($shipment_id);
 
-    public function updateEmployee(Request $request)
-    {
-        $request->validate([
-            'office_id'  => 'required|exists:offices,id',
-            'user_id'    => 'required|exists:users,id',
-            'position'   => 'required|in:office,courier',
+        if (!$shipment) {
+            return redirect()->back()->with('error', 'Такава пратка не съществува.');
+        }
+
+        $shipment->update([
+            'status' => 'delivered',
+            'delivered_at' => now(),
         ]);
 
-        return Employee::updateOrCreate(
-            ['id' => $request->employeeId],
-            [
-                'office_id'  => $request->office_id,
-                'user_id'    => $request->user_id,
-                'position'   => $request->position,
-            ]
-        );
+        $position = auth()->user()->employee->position;
+        if ($position == 'office') {
+            $shipment->update([
+                'registered_by' => auth()->user()->employee->id,
+            ]);
+        } else {
+        }
+
+
+        return redirect()->back()->with('success', 'Пратката е доставена успешно.');
     }
 
-    public function deleteEmployee(Request $request)
+    public function shipmentAccepted($shipment_id)
     {
-        Employee::findOrFail($request->employeeId)->delete();
-    }
+        $shipment = Shipment::find($shipment_id);
 
-    public function updateShipment(Request $request)
-    {
-        $request->validate([
-            'sender_id'             => 'required|exists:clients,id',
-            'receiver_id'           => 'required|exists:clients,id',
-            'origin_office_id'      => 'required|exists:offices,id',
-            'destination_office_id' => 'nullable|exists:offices,id',
-            'delivery_address'      => 'nullable|string|max:50',
-            'weight_kg'             => 'required|numeric|min:0.1',
-            'status'                => 'required|in:registered,in transit, delivered',
-            'registered_by'         => 'required|exists:employees,id',
-            'courier_by'            => 'required|exists:employees,id',
+        if (!$shipment) {
+            return redirect()->back()->with('error', 'Такава пратка не съществува.');
+        }
+
+        $shipment->update([
+            'status' => 'in_transit',
         ]);
 
-        $devType = $request->delivery_address ? 'ADDRESS' : 'OFFICE';
-        return Shipment::updateOrCreate(
-            ['id' => $request->shipmentId],
-            [
-                'sender_id'             => $request->sender_id,
-                'receiver_id'           => $request->receiver_id,
-                'origin_office_id'      => $request->origin_office_id,
-                'destination_office_id' => $request->destination_office_id,
-                'delivery_address'      => $request->delivery_address,
-                'weight_kg'             => $request->weight_kg,
-                'price'                 => $this->calculatePrice($request->weight_kg, $devType),
-                'status'                => $request->status,
-                'registered_by'         => $request->registered_by,
-                'courier_id'            => $request->courier_id
-            ]
-        );
+        return redirect()->back()->with('success', 'Пратката е на път.');
     }
 
-    public function deleteShipment(Request $request)
+    public function assignCourier(Request $request, $shipment_id)
     {
-        Shipment::findOrFail($request->shipmentId)->delete();
-    }
-
-    public function markAsDelivered(Request $request)
-    {
-        $request->validate([
-            'employee_id' => 'required|exists:employees,id',
-            'shipment_id' => 'required|exists:shipments,id',
+        $validated = $request->validate([
+            'courier_id' => ['nullable', 'integer', 'exists:employees,id'],
         ]);
 
-        $shipment = Shipment::findOrFail($request->shipment_id);
-        $shipment->status = 'delivered';
-        $shipment->courier_id = $request->employee_id;
-        $shipment->save();
+        $shipment = Shipment::find($shipment_id);
+        if (!$shipment) {
+            return redirect()->back()->with('error', 'Тази пратка не съществува.');
+        }
+
+        $receiveShipment = ShipmentReceiver::where('shipment_id', $shipment_id)->first();
+        if ($receiveShipment->address && empty($validated['courier_id'])) {
+            return redirect()->back()->with('error', 'Трябва да въведете куриер за доставка.');
+        }
+
+        $receiveShipment->update([
+            'courier_id' => $validated['courier_id'],
+        ]);
+
+        $shipment->update([
+            'registered_by' => auth()->user()->employee->id,
+        ]);
+
+        return back()->with('success', 'Куриерът е назначен успешно.');
     }
 
-    private function calculatePrice($weight, $deliveryType) {
+    private function calculatePrice($weight, $deliveryType)
+    {
         $price = $weight * self::BASE_PRICE_PER_KG;
 
-        if ($deliveryType === 'OFFICE') {
+        if ($deliveryType == 'office') {
             $price += self::OFFICE_DELIVERY_FEE;
-        } elseif ($deliveryType === 'ADDRESS') {
+        } elseif ($deliveryType == 'address') {
             $price += self::ADDRESS_DELIVERY_FEE;
         }
 

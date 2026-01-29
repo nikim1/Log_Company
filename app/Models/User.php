@@ -2,15 +2,12 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
-use Illuminate\Notifications\Notifiable;
 
 class User extends Authenticatable
 {
-    /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, Notifiable;
+    use HasFactory;
 
     /**
      * The attributes that are mass assignable.
@@ -21,6 +18,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'role_id',
+        'profile_image'
     ];
 
     /**
@@ -30,7 +29,6 @@ class User extends Authenticatable
      */
     protected $hidden = [
         'password',
-        'remember_token',
     ];
 
     /**
@@ -41,8 +39,32 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            'email_verified_at' => 'datetime',
             'password' => 'hashed',
         ];
+    }
+
+    public function hasRole($role)
+    {
+        // we can pass string or array
+        if (is_array($role)) {
+            return in_array($this->role->name, $role);
+        }
+
+        return $this->role->name && $this->role->name == $role;
+    }
+
+    public function role()
+    {
+        return $this->belongsTo(Role::class, 'role_id', 'id');
+    }
+
+    public function employee()
+    {
+        return $this->hasOne(Employee::class, 'user_id', 'id');
+    }
+
+    public function client()
+    {
+        return $this->hasOne(Client::class, 'user_id', 'id');
     }
 }
